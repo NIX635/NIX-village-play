@@ -29,6 +29,7 @@
     <label for="pw">놀이 주소 비밀번호</label>
     <input id="pw" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" />
     <button id="go">백업 시작</button>
+    <button id="copy" style="display:none;background:#7aa9e0">계정만 우리 창고로 복사</button>
     <ul id="list"></ul>
     <div id="msg"></div>
   </div>
@@ -116,6 +117,72 @@ function collect(server, filter, row) {
   });
 }
 
+// ---------- 계정 복사 (쓰기) ----------
+// 계정 저장(acct/…, 계정 백업 포함)·캐릭터 품절(char/…) 중 우리 창고에 "없는 것만" 올려요. 있는 건 절대 안 건드려요.
+// 공용 창고끼리 내용이 다르면 가장 많은 곳이 가진 것(같으면 HiveMQ 쪽)을 골라요.
+// 어느 것을 골라도 안전해요: 로그인할 때 게임이 모든 창고에서 가장 최근 저장을 골라 쓰고, 빠진 창고를 그걸로 다시 메워요.
+let last = null;
+function accountsMissing(out) {
+  const relay = out.servers[SERVERS[0].url].retained;
+  const pubs = SERVERS.slice(1).map((s) => out.servers[s.url].retained);
+  const order = [pubs[1], pubs[0], pubs[2]].filter(Boolean); // HiveMQ 먼저
+  const topics = new Set();
+  for (const p of pubs) for (const t of Object.keys(p)) if (t.startsWith(out.base + '/acct/') || t.startsWith(out.base + '/char/')) topics.add(t);
+  const res = [];
+  for (const t of topics) {
+    if (t in relay) continue;
+    const votes = new Map();
+    for (const p of order) if (t in p) votes.set(p[t], (votes.get(p[t]) || 0) + 1);
+    let best = null, n = 0;
+    for (const [v, c] of votes) if (c > n) (best = v), (n = c);
+    res.push([t, best]);
+  }
+  return res;
+}
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+function publishPkt(topic, payload) {
+  const t = str(topic);
+  const len = t.length + payload.length;
+  const head = [0x31, ...varint(len)];
+  const out = new Uint8Array(head.length + len);
+  out.set(head, 0); out.set(t, head.length); out.set(payload, head.length + t.length);
+  return out;
+}
+document.getElementById('copy').onclick = async () => {
+  const cb = document.getElementById('copy'); const msg = document.getElementById('msg');
+  const items = last ? accountsMissing(last) : [];
+  if (!items.length) return;
+  if (!confirm(`우리 창고에 없는 계정 기록 ${items.length}개를 복사할까요? 이미 있는 건 건드리지 않아요.`)) return;
+  cb.disabled = true;
+  const server = SERVERS[0];
+  const sent = await new Promise((resolve) => {
+    let ws; let n = 0;
+    try { ws = new WebSocket(server.url, ['mqtt']); } catch { return resolve(-1); }
+    ws.binaryType = 'arraybuffer';
+    const read = reader();
+    ws.onopen = () => ws.send(connectPkt('nvcp-' + Math.random().toString(16).slice(2, 10), server.user, server.pass));
+    ws.onmessage = async (e) => {
+      for (const p of read(new Uint8Array(e.data))) {
+        if (p.h >> 4 !== 2) continue;
+        if (p.body[1] !== 0) { ws.close(); return resolve(-1); }
+        // 전용 창고 속도 제한(초당 60개) 아래로 천천히
+        for (const [t, v] of items) { ws.send(publishPkt(t, unb64(v))); n++; cb.textContent = `복사 중… ${n}/${items.length}`; await new Promise((r) => setTimeout(r, 60)); }
+        setTimeout(() => { try { ws.send(new Uint8Array([0xe0, 0])); ws.close(); } catch {} resolve(n); }, 1500);
+      }
+    };
+    ws.onerror = () => {};
+    ws.onclose = () => resolve(n || -1);
+  });
+  if (sent < 0) { cb.disabled = false; cb.textContent = '다시 시도'; return (msg.textContent = '우리 창고에 연결하지 못했어요. 잠시 뒤 다시 눌러 주세요.'); }
+  // 확인: 우리 창고를 다시 읽어서 다 들어갔는지
+  const row = document.createElement('span');
+  const check = await collect(server, last.base + '/#', row);
+  const ok = items.filter(([t]) => t in check.retained).length;
+  msg.textContent = `복사 ${sent}개 보냄 → 우리 창고에서 확인 ${ok}/${items.length}개 ${ok === items.length ? '✅' : '⚠️'}\n(다시 확인하려면 "백업 시작"을 한 번 더 눌러 주세요)`;
+  cb.textContent = ok === items.length ? '복사 끝 ✅' : '다시 시도';
+  cb.disabled = ok === items.length;
+};
+
 document.getElementById('go').onclick = async () => {
   const pw = document.getElementById('pw').value.replace(/\s/g, '');
   const btn = document.getElementById('go'); const list = document.getElementById('list'); const msg = document.getElementById('msg');
@@ -139,6 +206,11 @@ document.getElementById('go').onclick = async () => {
   for (const s of SERVERS.slice(1)) for (const t of Object.keys(out.servers[s.url].retained)) pub.add(t);
   const onlyPub = [...pub].filter((t) => !(t in relay)).length; const onlyRelay = Object.keys(relay).filter((t) => !pub.has(t)).length;
   out.summary = { publicTopics: pub.size, relayTopics: Object.keys(relay).length, onlyPublic: onlyPub, onlyRelay };
+  last = out;
+  const missing = accountsMissing(out);
+  const cb = document.getElementById('copy');
+  cb.style.display = missing.length ? 'block' : 'none';
+  cb.textContent = `계정만 우리 창고로 복사 (${missing.length}개)`;
   const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
   a.download = `nix-village-backup-${out.at.slice(0, 16).replace(/[:T]/g, '-')}.json`; a.click();
