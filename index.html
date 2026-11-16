@@ -24,10 +24,11 @@
   <div id="msg"></div>
   <div id="bar"><i id="fill"></i></div>
   <div id="sub"></div>
+  <button id="again" type="button" style="display:none">이어서 받기</button>
 </form>
 <script>
 // 게임 파일은 따로 받아요 (화면은 바로 뜨고, 받는 동안 비밀번호를 쳐 둘 수 있어요). 한 번 받으면 폰에 보관해 다음엔 바로 열려요.
-var G="g-f5b4bb5a2a1f.bin",SIZE=15015124,ITER=1000000,CACHE='nv-play';
+var G="g-262dd329ebd6.bin",SIZE=8140295,ITER=1000000,CACHE='nv-play';
 var msg=document.getElementById('msg'),fill=document.getElementById('fill'),sub=document.getElementById('sub');
 function say(t,err){msg.style.color=err?'#d33':'#5a3d4c';msg.textContent=t;}
 function mb(n){return (n/1048576).toFixed(1);}
@@ -38,21 +39,52 @@ var gotBytes=0,ready=false;
 function showDownload(){if(!ready)sub.textContent='게임 받는 중 '+Math.min(99,Math.floor(gotBytes/SIZE*100))+'% ('+mb(gotBytes)+' / '+mb(SIZE)+'MB) · 처음 한 번만 받아요';}
 async function fromCache(){try{if(!window.caches)return null;var c=await caches.open(CACHE);var r=await c.match(G);if(!r)return null;var b=new Uint8Array(await r.arrayBuffer());return b.length===SIZE?b:null;}catch(e){return null;}}
 async function toCache(buf){try{if(!window.caches)return;var c=await caches.open(CACHE);await c.put(G,new Response(buf,{headers:{'content-type':'application/octet-stream'}}));var ks=await c.keys();for(var i=0;i<ks.length;i++)if(ks[i].url.indexOf(G)<0)await c.delete(ks[i]);}catch(e){}}
-async function download(){
-  for(var attempt=0;;attempt++){
-    try{
-      var res=await fetch(G,{cache:attempt?'reload':'default'});
-      if(!res.ok)throw new Error('http '+res.status);
-      var out=new Uint8Array(SIZE),off=0;
-      if(res.body&&res.body.getReader){var rd=res.body.getReader();for(;;){var x=await rd.read();if(x.done)break;var v=x.value;if(off+v.length>out.length){var bigger=new Uint8Array(off+v.length);bigger.set(out.subarray(0,off));out=bigger;}out.set(v,off);off+=v.length;gotBytes=off;setBar(off/SIZE);showDownload();}}
-      else{out=new Uint8Array(await res.arrayBuffer());off=out.length;}
-      if(off!==SIZE)throw new Error('size');
-      return out;
-    }catch(e){if(attempt>=3)throw e;sub.textContent='연결이 끊겨서 다시 받는 중…';await new Promise(function(r){setTimeout(r,1500*(attempt+1));});}
-  }
+// 데이터(LTE)에서 받다 끊겨도 처음부터 다시 받지 않게: 1MB 씩 나눠 받고, 받은 조각은 폰에 보관해요.
+// 끊기면 받은 데까지 두고 천천히 다시(1·2·4·8·15·30초), 새로 고침해도 이어서 받아요 (NIX 2026-11-16 데이터에서 "게임을 받지 못했어요")
+var CH=1048576,PART='nv-play-part',NCH=Math.ceil(SIZE/CH),have=[];
+function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
+function online(){return new Promise(function(r){if(navigator.onLine!==false&&!document.hidden)return r();function go(){if(navigator.onLine!==false&&!document.hidden){window.removeEventListener('online',go);document.removeEventListener('visibilitychange',go);r();}}window.addEventListener('online',go);document.addEventListener('visibilitychange',go);});}
+async function partCache(){try{return window.caches?await caches.open(PART):null;}catch(e){return null;}}
+async function loadParts(pc){var n=0;if(!pc)return 0;try{var ks=await pc.keys();for(var i=0;i<ks.length;i++){var u=ks[i].url,m=u.match(/[?&]p=(\d+)$/);if(u.indexOf(G)<0||!m){await pc.delete(ks[i]);continue;}var j=+m[1],r=await pc.match(ks[i]),b=new Uint8Array(await r.arrayBuffer());if(b.length===Math.min(CH,SIZE-j*CH)){have[j]=b;n+=b.length;}}}catch(e){}return n;}
+async function getChunk(j,pc){
+  var a=j*CH,z=Math.min(SIZE,a+CH)-1,res=await fetch(G,{headers:{Range:'bytes='+a+'-'+z},cache:'no-store'});
+  if(res.status===200)return 'full';
+  if(res.status!==206)throw new Error('http '+res.status);
+  var want=z-a+1,out=new Uint8Array(want),off=0,base=gotBytes;
+  if(res.body&&res.body.getReader){var rd=res.body.getReader();for(;;){var x=await rd.read();if(x.done)break;var v=x.value;if(off+v.length>want)throw new Error('size');out.set(v,off);off+=v.length;gotBytes=base+off;setBar(gotBytes/SIZE);showDownload();}}
+  else{out=new Uint8Array(await res.arrayBuffer());off=out.length;}
+  if(off!==want){gotBytes=base;throw new Error('short');}
+  have[j]=out;gotBytes=base+want;
+  try{if(pc)await pc.put(G+'?p='+j,new Response(out.slice(0)));}catch(e){}
 }
-var data=(async function(){var b=await fromCache();if(b){ready=true;setBar(1);return b;}showDownload();b=await download();ready=true;setBar(1);sub.textContent='';toCache(b);return b;})();
-data.catch(function(){sub.textContent='';say('게임을 받지 못했어요. 와이파이를 확인하고 새로 고침해 주세요',true);});
+async function getFull(){
+  var res=await fetch(G,{cache:'reload'});if(!res.ok)throw new Error('http '+res.status);
+  var out=new Uint8Array(await res.arrayBuffer());if(out.length!==SIZE)throw new Error('size');return out;
+}
+async function download(){
+  var pc=await partCache();gotBytes=await loadParts(pc);setBar(gotBytes/SIZE);showDownload();
+  var waits=[1000,2000,4000,8000,15000,30000],fails=0;
+  for(var j=0;j<NCH;j++){
+    if(have[j])continue;
+    for(;;){
+      try{await online();var r=await getChunk(j,pc);if(r==='full'){have=[];gotBytes=0;var f=await getFull();return f;}fails=0;break;}
+      catch(e){fails++;if(fails>waits.length)throw e;sub.textContent='연결이 끊겨서 받은 데부터 이어 받는 중… ('+mb(gotBytes)+' / '+mb(SIZE)+'MB)';await sleep(waits[fails-1]);}
+    }
+  }
+  var out=new Uint8Array(SIZE);for(var k=0;k<NCH;k++)out.set(have[k],k*CH);
+  return out;
+}
+var data=new Promise(function(done){
+  async function run(){
+    try{var b=await fromCache();if(b){ready=true;setBar(1);return done(b);}showDownload();b=await download();ready=true;setBar(1);sub.textContent='';toCache(b).then(function(){try{caches.delete(PART);}catch(e){}});done(b);}
+    catch(e){
+      sub.textContent='';say('인터넷이 약해서 잠깐 멈췄어요. 받은 데까지는 보관했어요',true);
+      var bt=document.getElementById('again');bt.style.display='block';
+      bt.onclick=function(){bt.style.display='none';say(busy?'다 받으면 바로 들어가요!':'');run();};
+    }
+  }
+  run();
+});
 // 비밀번호 → 열쇠 (100만 번 계산이라 폰에서 몇 초 걸려요. 한 번 만든 열쇠는 기억해 둬요)
 async function keyFor(pw,salt){
   var c=crypto.subtle;
