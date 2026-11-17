@@ -28,55 +28,72 @@
 </form>
 <script>
 // 게임 파일은 따로 받아요 (화면은 바로 뜨고, 받는 동안 비밀번호를 쳐 둘 수 있어요). 한 번 받으면 폰에 보관해 다음엔 바로 열려요.
-var G="g-b4a7a2cebbdb.bin",SIZE=8586441,ITER=1000000,CACHE='nv-play';
+// 게임 = 코드(g-*.bin, 업데이트마다 바뀜) + 그림 묶음(a-*.bin, 내용이 같으면 이름도 같음). 업데이트 뒤엔 바뀐 파일만 다시 받아요.
+// 예전엔 그림까지 한 파일이라 업데이트마다 8MB 를 통째로 다시 받았어요 (NIX 2026-11-17 "로그인할 때마다 다운로드").
+var G="g-d1ef768e059c.bin",SIZE=2608329,ITER=1000000,ART=[["a-art-0-decff767e160.bin",813749],["a-art-1-705f3f427461.bin",467356],["a-art-2-2f3b43d00aad.bin",267977],["a-art-3-e67c77d4b0a8.bin",595301],["a-art-4-81b7e0cd344e.bin",1898027],["a-art-5-bfac24d326f4.bin",1028989],["a-art-6-b0693aa2f282.bin",434050],["a-art-7-fe473d68616d.bin",481379]],CACHE='nv-play';
+var FILES=[{n:G,size:SIZE}].concat(ART.map(function(a){return {n:a[0],size:a[1]};}));
 var msg=document.getElementById('msg'),fill=document.getElementById('fill'),sub=document.getElementById('sub');
 function say(t,err){msg.style.color=err?'#d33':'#5a3d4c';msg.textContent=t;}
 function mb(n){return (n/1048576).toFixed(1);}
 function b64(u){var s='';for(var i=0;i<u.length;i+=32768)s+=String.fromCharCode.apply(null,u.subarray(i,i+32768));return btoa(s);}
 function u8(s){var b=atob(s),a=new Uint8Array(b.length);for(var i=0;i<b.length;i++)a[i]=b.charCodeAt(i);return a;}
 function setBar(p){fill.style.width=Math.round(p*100)+'%';}
-var gotBytes=0,ready=false;
-function showDownload(){if(!ready)sub.textContent='게임 받는 중 '+Math.min(99,Math.floor(gotBytes/SIZE*100))+'% ('+mb(gotBytes)+' / '+mb(SIZE)+'MB) · 처음 한 번만 받아요';}
-async function fromCache(){try{if(!window.caches)return null;var c=await caches.open(CACHE);var r=await c.match(G);if(!r)return null;var b=new Uint8Array(await r.arrayBuffer());return b.length===SIZE?b:null;}catch(e){return null;}}
-async function toCache(buf){try{if(!window.caches)return;var c=await caches.open(CACHE);await c.put(G,new Response(buf,{headers:{'content-type':'application/octet-stream'}}));var ks=await c.keys();for(var i=0;i<ks.length;i++)if(ks[i].url.indexOf(G)<0)await c.delete(ks[i]);}catch(e){}}
+var gotBytes=0,needBytes=0,firstTime=true,ready=false;
+function showDownload(){if(!ready&&needBytes)sub.textContent=(firstTime?'게임 받는 중 ':'업데이트 받는 중 ')+Math.min(99,Math.floor(gotBytes/needBytes*100))+'% ('+mb(gotBytes)+' / '+mb(needBytes)+'MB) · '+(firstTime?'처음 한 번만 받아요':'바뀐 것만 받아요');}
+function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
+async function openCache(n){try{return window.caches?await caches.open(n):null;}catch(e){return null;}}
+async function fromCache(c,f){try{var r=c&&await c.match(f.n);if(!r)return null;var b=new Uint8Array(await r.arrayBuffer());return b.length===f.size?b:null;}catch(e){return null;}}
+// 폰 보관함에 다 넣은 뒤에 들어가요. 넣는 도중에 게임 화면으로 바뀌면 보관이 끊겨서 다음 로그인 때 또 받았어요.
+async function toCache(c,f,buf){try{if(c)await Promise.race([c.put(f.n,new Response(buf.slice(0),{headers:{'content-type':'application/octet-stream'}})),sleep(8000)]);}catch(e){}}
+function keepName(u){var n=u.split('?')[0].split('/').pop();for(var i=0;i<FILES.length;i++)if(FILES[i].n===n)return true;return false;}
+async function tidy(c,pc){try{if(c){var ks=await c.keys();for(var i=0;i<ks.length;i++)if(!keepName(ks[i].url))await c.delete(ks[i]);}if(pc){ks=await pc.keys();for(i=0;i<ks.length;i++)if(!keepName(ks[i].url))await pc.delete(ks[i]);}}catch(e){}}
 // 데이터(LTE)에서 받다 끊겨도 처음부터 다시 받지 않게: 1MB 씩 나눠 받고, 받은 조각은 폰에 보관해요.
 // 끊기면 받은 데까지 두고 천천히 다시(1·2·4·8·15·30초), 새로 고침해도 이어서 받아요 (NIX 2026-11-16 데이터에서 "게임을 받지 못했어요")
-var CH=1048576,PART='nv-play-part',NCH=Math.ceil(SIZE/CH),have=[];
-function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
+var CH=1048576,PART='nv-play-part';
 function online(){return new Promise(function(r){if(navigator.onLine!==false&&!document.hidden)return r();function go(){if(navigator.onLine!==false&&!document.hidden){window.removeEventListener('online',go);document.removeEventListener('visibilitychange',go);r();}}window.addEventListener('online',go);document.addEventListener('visibilitychange',go);});}
-async function partCache(){try{return window.caches?await caches.open(PART):null;}catch(e){return null;}}
-async function loadParts(pc){var n=0;if(!pc)return 0;try{var ks=await pc.keys();for(var i=0;i<ks.length;i++){var u=ks[i].url,m=u.match(/[?&]p=(\d+)$/);if(u.indexOf(G)<0||!m){await pc.delete(ks[i]);continue;}var j=+m[1],r=await pc.match(ks[i]),b=new Uint8Array(await r.arrayBuffer());if(b.length===Math.min(CH,SIZE-j*CH)){have[j]=b;n+=b.length;}}}catch(e){}return n;}
-async function getChunk(j,pc){
-  var a=j*CH,z=Math.min(SIZE,a+CH)-1,res=await fetch(G,{headers:{Range:'bytes='+a+'-'+z},cache:'no-store'});
+async function loadParts(pc,f,have){var n=0;if(!pc)return 0;try{var ks=await pc.keys();for(var i=0;i<ks.length;i++){var u=ks[i].url,m=u.match(/[?&]p=(\d+)$/);if(u.split('?')[0].split('/').pop()!==f.n||!m)continue;var j=+m[1],r=await pc.match(ks[i]),b=new Uint8Array(await r.arrayBuffer());if(b.length===Math.min(CH,f.size-j*CH)){have[j]=b;n+=b.length;}}}catch(e){}return n;}
+async function getChunk(f,j,pc,have){
+  var a=j*CH,z=Math.min(f.size,a+CH)-1,res=await fetch(f.n,{headers:{Range:'bytes='+a+'-'+z},cache:'no-store'});
   if(res.status===200)return 'full';
   if(res.status!==206)throw new Error('http '+res.status);
   var want=z-a+1,out=new Uint8Array(want),off=0,base=gotBytes;
-  if(res.body&&res.body.getReader){var rd=res.body.getReader();for(;;){var x=await rd.read();if(x.done)break;var v=x.value;if(off+v.length>want)throw new Error('size');out.set(v,off);off+=v.length;gotBytes=base+off;setBar(gotBytes/SIZE);showDownload();}}
+  if(res.body&&res.body.getReader){var rd=res.body.getReader();for(;;){var x=await rd.read();if(x.done)break;var v=x.value;if(off+v.length>want)throw new Error('size');out.set(v,off);off+=v.length;gotBytes=base+off;setBar(gotBytes/needBytes);showDownload();}}
   else{out=new Uint8Array(await res.arrayBuffer());off=out.length;}
   if(off!==want){gotBytes=base;throw new Error('short');}
   have[j]=out;gotBytes=base+want;
-  try{if(pc)await pc.put(G+'?p='+j,new Response(out.slice(0)));}catch(e){}
+  try{if(pc)await pc.put(f.n+'?p='+j,new Response(out.slice(0)));}catch(e){}
 }
-async function getFull(){
-  var res=await fetch(G,{cache:'reload'});if(!res.ok)throw new Error('http '+res.status);
-  var out=new Uint8Array(await res.arrayBuffer());if(out.length!==SIZE)throw new Error('size');return out;
+async function getFull(f){
+  var res=await fetch(f.n,{cache:'reload'});if(!res.ok)throw new Error('http '+res.status);
+  var out=new Uint8Array(await res.arrayBuffer());if(out.length!==f.size)throw new Error('size');return out;
 }
-async function download(){
-  var pc=await partCache();gotBytes=await loadParts(pc);setBar(gotBytes/SIZE);showDownload();
+async function download(f,pc){
+  var have=[],start=gotBytes,nch=Math.ceil(f.size/CH);gotBytes+=await loadParts(pc,f,have);setBar(gotBytes/needBytes);showDownload();
   var waits=[1000,2000,4000,8000,15000,30000],fails=0;
-  for(var j=0;j<NCH;j++){
+  for(var j=0;j<nch;j++){
     if(have[j])continue;
     for(;;){
-      try{await online();var r=await getChunk(j,pc);if(r==='full'){have=[];gotBytes=0;var f=await getFull();return f;}fails=0;break;}
-      catch(e){fails++;if(fails>waits.length)throw e;sub.textContent='연결이 끊겨서 받은 데부터 이어 받는 중… ('+mb(gotBytes)+' / '+mb(SIZE)+'MB)';await sleep(waits[fails-1]);}
+      try{await online();var r=await getChunk(f,j,pc,have);if(r==='full'){gotBytes=start;var o=await getFull(f);gotBytes=start+f.size;return o;}fails=0;break;}
+      catch(e){fails++;if(fails>waits.length)throw e;sub.textContent='연결이 끊겨서 받은 데부터 이어 받는 중… ('+mb(gotBytes)+' / '+mb(needBytes)+'MB)';await sleep(waits[fails-1]);}
     }
   }
-  var out=new Uint8Array(SIZE);for(var k=0;k<NCH;k++)out.set(have[k],k*CH);
+  var out=new Uint8Array(f.size);for(var k=0;k<nch;k++)out.set(have[k],k*CH);
   return out;
 }
+// 다 모이면 [코드, 그림 묶음…] 순서로 넘겨요
+var got=[];
 var data=new Promise(function(done){
   async function run(){
-    try{var b=await fromCache();if(b){ready=true;setBar(1);return done(b);}showDownload();b=await download();ready=true;setBar(1);sub.textContent='';toCache(b).then(function(){try{caches.delete(PART);}catch(e){}});done(b);}
+    try{
+      var c=await openCache(CACHE),pc=await openCache(PART),miss=[];
+      for(var i=0;i<FILES.length;i++){if(!got[i])got[i]=await fromCache(c,FILES[i]);if(!got[i])miss.push(i);}
+      // 예전 방식(한 파일) 보관함이 남아 있거나 아무것도 없으면 처음 받기, 일부만 없으면 업데이트 받기
+      firstTime=miss.length===FILES.length;needBytes=0;gotBytes=0;for(i=0;i<miss.length;i++)needBytes+=FILES[miss[i]].size;
+      if(miss.length){showDownload();for(i=0;i<miss.length;i++){var f=FILES[miss[i]];got[miss[i]]=await download(f,pc);await toCache(c,f,got[miss[i]]);}}
+      ready=true;setBar(1);sub.textContent='';
+      tidy(c,pc);
+      done(got);
+    }
     catch(e){
       sub.textContent='';say('인터넷이 약해서 잠깐 멈췄어요. 받은 데까지는 보관했어요',true);
       var bt=document.getElementById('again');bt.style.display='block';
@@ -96,6 +113,12 @@ async function openWith(raw,bin){
   var key=await crypto.subtle.importKey('raw',raw,'AES-GCM',false,['decrypt']);
   return await crypto.subtle.decrypt({name:'AES-GCM',iv:bin.subarray(16,28)},key,bin.subarray(28));
 }
+// 그림 묶음을 풀어 게임 코드 안 자리(/*__NV_ART__*/)에 넣어요. 그림 묶음이 없는 예전 게임 파일은 그대로.
+async function withArt(html,raw,bins){
+  if(bins.length<2||html.indexOf('/*__NV_ART__*/')<0)return html;
+  var t=[];for(var i=1;i<bins.length;i++)t.push('__nvA('+await inflate(await openWith(raw,bins[i]))+');');
+  return html.replace('/*__NV_ART__*/',function(){return t.join('\n');});
+}
 async function inflate(plain){
   var h=new Uint8Array(plain,0,2);
   if(h[0]===0x1f&&h[1]===0x8b){
@@ -111,19 +134,19 @@ async function enter(pw,remember){
   if(busy)return;busy=true;
   try{
     if(!ready)say('다 받으면 바로 들어가요!');
-    var bin=await data,salt=bin.subarray(0,16),saltB=b64(salt),plain=null;
+    var bins=await data,bin=bins[0],salt=bin.subarray(0,16),saltB=b64(salt),plain=null,rawK=null;
     var saved=null;try{saved=JSON.parse(localStorage.getItem('nv_play_k')||'null');}catch(e){}
-    if(!pw&&saved&&saved.s===saltB){try{say('여는 중이에요…');plain=await openWith(u8(saved.k),bin);}catch(e){plain=null;}}
+    if(!pw&&saved&&saved.s===saltB){try{say('여는 중이에요…');rawK=u8(saved.k);plain=await openWith(rawK,bin);}catch(e){plain=null;}}
     if(!plain){
       if(!pw){busy=false;say('');return;}
       say('비밀번호 확인 중이에요…');
       var l=tries(pw),err;
-      for(var i=0;i<l.length&&!plain;i++){try{var raw=await keyFor(l[i],salt);plain=await openWith(raw,bin);pw=l[i];try{localStorage.setItem('nv_play_k',JSON.stringify({s:saltB,k:b64(raw)}));}catch(e){}}catch(x){err=x;}}
+      for(var i=0;i<l.length&&!plain;i++){try{var raw=await keyFor(l[i],salt);plain=await openWith(raw,bin);rawK=raw;pw=l[i];try{localStorage.setItem('nv_play_k',JSON.stringify({s:saltB,k:b64(raw)}));}catch(e){}}catch(x){err=x;}}
       if(!plain){busy=false;try{localStorage.removeItem('nv_play_k');if(!remember)localStorage.removeItem('nv_play_pw');}catch(e){}say('비밀번호가 달라요. 다시 해 볼까요?',true);return;}
       if(remember){try{localStorage.setItem('nv_play_pw',pw);}catch(e){}}
     }
     say('여는 중이에요…');
-    var html=await inflate(plain);
+    var html=await withArt(await inflate(plain),rawK,bins);
     document.open();document.write(html);document.close();
   }catch(e){busy=false;if(e&&e.message!=='old'&&ready)say('문제가 생겼어요. 새로 고침해 주세요',true);}
 }
@@ -131,7 +154,7 @@ document.getElementById('f').addEventListener('submit',function(e){e.preventDefa
 // 전에 들어온 적 있으면: 기억한 열쇠(같은 salt) → 없으면 기억한 비밀번호로 자동으로 열어요
 (function(){var pw=null;try{pw=localStorage.getItem('nv_play_pw');}catch(e){}var k=null;try{k=localStorage.getItem('nv_play_k');}catch(e){}
   if(!pw&&!k)return;say('여는 중이에요…');
-  data.then(async function(bin){var saltB=b64(bin.subarray(0,16)),s=null;try{s=JSON.parse(k||'null');}catch(e){}
+  data.then(async function(bins){var saltB=b64(bins[0].subarray(0,16)),s=null;try{s=JSON.parse(k||'null');}catch(e){}
     if(s&&s.s===saltB){await enter(null,false);if(!busy&&pw)await enter(pw,false);}else if(pw)await enter(pw,false);else say('');
   }).catch(function(){});
 })();
