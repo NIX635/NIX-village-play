@@ -30,7 +30,7 @@
 // 게임 파일은 따로 받아요 (화면은 바로 뜨고, 받는 동안 비밀번호를 쳐 둘 수 있어요). 한 번 받으면 폰에 보관해 다음엔 바로 열려요.
 // 게임 = 코드(g-*.bin, 업데이트마다 바뀜) + 그림 묶음(a-*.bin, 내용이 같으면 이름도 같음). 업데이트 뒤엔 바뀐 파일만 다시 받아요.
 // 예전엔 그림까지 한 파일이라 업데이트마다 8MB 를 통째로 다시 받았어요 (NIX 2026-11-17 "로그인할 때마다 다운로드").
-var G="g-19619de7303c.bin",SIZE=3158153,ITER=1000000,ART=[["a-art-0-06ea2d39f4c0.bin",826039],["a-art-1-8fd328e6e9dd.bin",494171],["a-art-2-ce18a3f92192.bin",274080],["a-art-3-63d6326831fe.bin",613033],["a-art-4-08370c2a95b1.bin",1921011],["a-art-5-ee7957cc2311.bin",1165331],["a-art-6-a8fa8094b82e.bin",492395],["a-art-7-c357dae95c2d.bin",503612]],CACHE='nv-play';
+var G="g-d206e28db7fc.bin",SIZE=3162472,ITER=1000000,ART=[["a-art-0-06ea2d39f4c0.bin",826039],["a-art-1-8fd328e6e9dd.bin",494171],["a-art-2-ce18a3f92192.bin",274080],["a-art-3-63d6326831fe.bin",613033],["a-art-4-08370c2a95b1.bin",1921011],["a-art-5-ee7957cc2311.bin",1165331],["a-art-6-a8fa8094b82e.bin",492395],["a-art-7-c357dae95c2d.bin",503612]],CACHE='nv-play';
 var FILES=[{n:G,size:SIZE}].concat(ART.map(function(a){return {n:a[0],size:a[1]};}));
 var msg=document.getElementById('msg'),fill=document.getElementById('fill'),sub=document.getElementById('sub');
 function say(t,err){msg.style.color=err?'#d33':'#5a3d4c';msg.textContent=t;}
